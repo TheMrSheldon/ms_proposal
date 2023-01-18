@@ -7,10 +7,10 @@ from ranking_utils.model import Ranker
 from ranking_utils.model.data import DataProcessor
 
 import torch
-from torch.nn import MSELoss, BCEWithLogitsLoss
-# from torch.linalg import vector_norm
+from torch.nn import BCEWithLogitsLoss, MSELoss
+from torch.linalg import vector_norm
 from torch_geometric.data import Batch as tgBatch, Data
-# from torch_geometric.utils import unbatch_edge_index
+from common.utils import unbatch_edge_attr
 # from torch_geometric.utils.convert import to_scipy_sparse_matrix
 from transformers import DistilBertModel, DistilBertTokenizer, get_constant_schedule_with_warmup
 from typing import Any, Iterable, NamedTuple, Union
@@ -99,17 +99,17 @@ class ProposedRanker(Ranker):
             "sebastian-hofstaetter/colbert-distilbert-margin_mse-T2-msmarco"
         )
         self.mseloss = MSELoss()
-        self.bce = BCEWithLogitsLoss()
+        self.bce = BCEWithLogitsLoss(reduction='none')
 
         # Freeze colbers parameters since we only want to train the doc_encoder for now
         for p in self.colbert.parameters():
             p.requires_grad = False
 
     def _sparsity(self, doc_graphs: Data) -> torch.Tensor:
-        raise NotImplementedError
-        # Need another way to unbatch the edge_weights
-        # norms = [vector_norm(v, ord=2) for v in unbatch_edge_index(doc_graphs.edge_weight, doc_graphs.batch)]
-        # return torch.tensor(norms)
+        # Calculate the l2-norm for each graph's edge_weights
+        edge_attrs = unbatch_edge_attr(doc_graphs.edge_weight, doc_graphs.edge_index, doc_graphs.batch)
+        norms = [vector_norm(v, ord=2) for v in edge_attrs]
+        return torch.tensor(norms)
 
     def forward(self,
                 batch: Batch,
@@ -134,11 +134,11 @@ class ProposedRanker(Ranker):
         # teacher_pred = self.colbert.forward_aggregation(query_vecs, teacher_doc_vecs)
 
         distillation_loss = self.mseloss(doc_vecs, teacher_doc_vecs)
-        #sparsity = self._sparsity(doc_graphs)
+        sparsity = self._sparsity(doc_graphs)
         classification_loss = self.bce(pred.flatten(), labels.flatten())
 
         # Ablation: different combinations of these lossfunctions and their effect on training
-        loss = distillation_loss + classification_loss  # TODO: add sparsity metric
+        loss = torch.mean(distillation_loss + sparsity + classification_loss)
         self.log("train_loss", loss)
         return loss
 
