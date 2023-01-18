@@ -134,7 +134,7 @@ class ProposedRanker(Ranker):
         # teacher_pred = self.colbert.forward_aggregation(query_vecs, teacher_doc_vecs)
 
         distillation_loss = self.mseloss(doc_vecs, teacher_doc_vecs)
-        sparsity = self._sparsity(doc_graphs)
+        sparsity = self._sparsity(doc_graphs).to(self.device)
         classification_loss = self.bce(pred.flatten(), labels.flatten())
 
         # Ablation: different combinations of these lossfunctions and their effect on training
