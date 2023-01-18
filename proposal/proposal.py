@@ -1,3 +1,4 @@
+from hashlib import sha1
 from itertools import product
 
 from pathlib import Path
@@ -42,7 +43,9 @@ class ProposedDataProcessor(DataProcessor):
 
     @torch.no_grad()
     def _construct_graph_or_load_from_cache(self, doc: str) -> Data:
-        key = hash(doc).to_bytes(8, "big", signed=True).hex()
+        # We can't use python's hash here since it is not consistent across runs
+        # key = hash(doc).to_bytes(8, "big", signed=True).hex()
+        key = sha1(doc.encode(), usedforsecurity=False).hexdigest()
         cache_file = self.cache_dir / f"{key}"
         if cache_file.exists():
             data = torch.load(cache_file)
