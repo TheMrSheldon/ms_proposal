@@ -1,6 +1,5 @@
 # https://github.com/sebastian-hofstaetter/neural-ranking-kd/blob/main/minimal_colbert_usage_example.ipynb
 from transformers import AutoModel, PreTrainedModel, PretrainedConfig
-from typing import Dict
 import torch
 
 
@@ -31,7 +30,7 @@ class ColBERT(PreTrainedModel):
 
         self.compressor = torch.nn.Linear(self.bert_model.config.hidden_size, cfg.compression_dim)
 
-    def forward(self, query: Dict[str, torch.LongTensor], document: Dict[str, torch.LongTensor]):
+    def forward(self, query: dict[str, torch.LongTensor], document: dict[str, torch.LongTensor]):
         query_vecs = self.forward_representation(query)
         document_vecs = self.forward_representation(document)
 
@@ -55,7 +54,7 @@ class ColBERT(PreTrainedModel):
         # mask out padding on the doc dimension (mask by -1000, because max should not select those, setting it to 0
         # might select them)
         exp_mask = document_mask.bool().unsqueeze(1).expand(-1, score.shape[1], -1)
-        score[~exp_mask] = - 10000
+        score[~exp_mask] = -10000
 
         # max pooling over document dimension
         score = score.max(-1).values
