@@ -10,10 +10,11 @@ import torch
 from torch.nn import BCEWithLogitsLoss, MSELoss
 from torch.linalg import vector_norm
 from torch_geometric.data import Batch as tgBatch, Data
-from common.utils import unbatch_edge_attr
 # from torch_geometric.utils.convert import to_scipy_sparse_matrix
 from transformers import DistilBertModel, DistilBertTokenizer, get_constant_schedule_with_warmup
 from typing import Any, Iterable, NamedTuple, Union
+
+from common.utils import tensor_hash, unbatch_edge_attr
 
 from ._doc_encoder import DocEncoder
 from ._colbert import ColBERT
@@ -90,10 +91,11 @@ class ProposedDataProcessor(DataProcessor):
 
 class ProposedRanker(Ranker):
 
-    def __init__(self, lr: float, warmup_steps: int) -> None:
+    def __init__(self, lr: float, warmup_steps: int, cache_dir: str = "./cache/colbert/") -> None:
         super().__init__()
         self.lr = lr
         self.warmup_steps = warmup_steps
+        self.cache_dir = Path(cache_dir)
         self.doc_encoder = DocEncoder(feature_size=768, hidden_size=768)
         self.colbert: ColBERT = ColBERT.from_pretrained(
             "sebastian-hofstaetter/colbert-distilbert-margin_mse-T2-msmarco"
@@ -104,6 +106,19 @@ class ProposedRanker(Ranker):
         # Freeze colbers parameters since we only want to train the doc_encoder for now
         for p in self.colbert.parameters():
             p.requires_grad = False
+
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _forward_colbert_representation_or_load_from_cache(self, input: dict[str, torch.LongTensor]) -> torch.Tensor:
+        key = tensor_hash(input["input_ids"])
+        cache_file = self.cache_dir / f"{key}"
+        if cache_file.exists():
+            data = torch.load(cache_file).to(self.device)
+            assert isinstance(data, torch.Tensor)
+        else:
+            data = self.colbert.forward_representation(input)
+            torch.save(data, cache_file)
+        return data
 
     def _sparsity(self, doc_graphs: Data) -> torch.Tensor:
         # Calculate the l2-norm for each graph's edge_weights
@@ -116,7 +131,7 @@ class ProposedRanker(Ranker):
                 return_all: bool = False
                 ) -> Union[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor, Data]]:
         docs_graphs, docs, queries = batch.doc_graphs, batch.docs, batch.queries
-        query_vecs = self.colbert.forward_representation(queries)
+        query_vecs = self._forward_colbert_representation_or_load_from_cache(queries)
         doc_vecs, doc_graphs = self.doc_encoder(**docs_graphs.to_dict())
         classlbl = self.colbert.forward_aggregation(
             query_vecs, doc_vecs, queries["attention_mask"], docs["attention_mask"]
@@ -130,7 +145,7 @@ class ProposedRanker(Ranker):
         assert isinstance(model_batch, Batch)
         pred, (query_vecs, doc_vecs, doc_graphs) = self(model_batch, return_all=True)
         assert isinstance(doc_graphs, Data)
-        teacher_doc_vecs = self.colbert.forward_representation(model_batch.docs)
+        teacher_doc_vecs = self._forward_colbert_representation_or_load_from_cache(model_batch.docs)
         # teacher_pred = self.colbert.forward_aggregation(query_vecs, teacher_doc_vecs)
 
         distillation_loss = self.mseloss(doc_vecs, teacher_doc_vecs)

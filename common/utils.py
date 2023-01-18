@@ -1,5 +1,11 @@
+from hashlib import sha1
 import torch
 from torch_geometric.utils import degree
+
+
+def tensor_hash(tensor: torch.Tensor) -> str:
+    bytes = tensor.cpu().numpy().tobytes()
+    return sha1(bytes, usedforsecurity=False).hexdigest()
 
 
 def unbatch_edge_attr(edge_attr: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor) -> list[torch.Tensor]:
