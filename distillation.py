@@ -3,6 +3,7 @@
 import hydra
 from hydra.utils import instantiate as hydra_inst
 from omegaconf import DictConfig
+from pathlib import Path
 from pytorch_lightning import LightningModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from ranking_utils.model.data.h5 import H5DataModule
@@ -31,8 +32,9 @@ def main(config: DictConfig):
 
     assert isinstance(trainer, Trainer)
 
-    checkpoint = config.checkpoint
-    if checkpoint is not None:
+    checkpoint = None
+    if config.checkpoint is not None:
+        checkpoint = Path(config.checkpoint_path) / config.checkpoint
         print(f"Resuming from checkpoint at {checkpoint}")
     trainer.fit(model=model, datamodule=datamodule, ckpt_path=checkpoint)
 

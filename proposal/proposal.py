@@ -109,16 +109,23 @@ class ProposedRanker(Ranker):
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _forward_colbert_representation_or_load_from_cache(self, input: dict[str, torch.LongTensor]) -> torch.Tensor:
-        key = tensor_hash(input["input_ids"])
+    @torch.no_grad()
+    def _fw_colbert_single(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        key = tensor_hash(input_ids)
         cache_file = self.cache_dir / f"{key}"
         if cache_file.exists():
             data = torch.load(cache_file).to(self.device)
             assert isinstance(data, torch.Tensor)
         else:
-            data = self.colbert.forward_representation(input)
+            input = {"input_ids": input_ids.unsqueeze(0), "attention_mask": attention_mask.unsqueeze(0)}
+            data = self.colbert.forward_representation(input).squeeze()
             torch.save(data, cache_file)
         return data
+
+    @torch.no_grad()
+    def _forward_colbert_representation_or_load_from_cache(self, input: dict[str, torch.LongTensor]) -> torch.Tensor:
+        out = torch.stack([self._fw_colbert_single(*pair) for pair in zip(input['input_ids'], input['attention_mask'])])
+        return out
 
     def _sparsity(self, doc_graphs: Data) -> torch.Tensor:
         # Calculate the l2-norm for each graph's edge_weights
