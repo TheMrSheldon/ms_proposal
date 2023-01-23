@@ -1,6 +1,7 @@
 defaults:
   - _self_
   - datamodule: h5
+  - ptlogger: tensorboard
 
 
 seed: 12345
@@ -26,3 +27,4 @@ trainer:
   strategy:
     _target_: pytorch_lightning.strategies.ddp.DDPStrategy
     find_unused_parameters: False
+  logger: ${ptlogger}

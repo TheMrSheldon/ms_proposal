@@ -17,12 +17,6 @@ def main(config: DictConfig):
     seed_everything(config.seed)
     common.set_cuda_devices_env(config.used_gpus)
 
-    model = ProposedRanker(lr=0.00003, warmup_steps=1000)
-    data_processor = ProposedDataProcessor(query_limit=10000)
-    datamodule = hydra_inst(config.datamodule, data_processor=data_processor)
-    assert isinstance(model, LightningModule)
-    assert isinstance(datamodule, H5DataModule)
-
     checkpointcb = ModelCheckpoint(
         dirpath=config.checkpoint_path,
         save_top_k=-1,
@@ -31,6 +25,12 @@ def main(config: DictConfig):
     trainer = hydra_inst(config.trainer, callbacks=[checkpointcb])
 
     assert isinstance(trainer, Trainer)
+
+    model = ProposedRanker(lr=0.00003, warmup_steps=1000, cache_dir=f"./cache/colbert_{trainer.precision}/")
+    data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=f"./cache/graphs_{trainer.precision}/")
+    datamodule = hydra_inst(config.datamodule, data_processor=data_processor)
+    assert isinstance(model, LightningModule)
+    assert isinstance(datamodule, H5DataModule)
 
     checkpoint = None
     if config.checkpoint is not None:
