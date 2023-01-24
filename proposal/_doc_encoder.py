@@ -1,14 +1,13 @@
 import torch
 from torch.nn import Module
 from torch.nn.utils.rnn import pad_sequence
-from torch_geometric.nn import GATConv, GCNConv
 from torch_geometric.data import Data
+from torch_geometric.nn import GATConv, GCNConv
 from torch_geometric.utils import unbatch
 from transformers import DistilBertTokenizer
 
 
 class DocEncoder(Module):
-
     def __init__(self, feature_size: int, hidden_size: int, steps: int = 1) -> None:
         super().__init__()
         self.feature_size = feature_size

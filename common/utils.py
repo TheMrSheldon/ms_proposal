@@ -1,4 +1,5 @@
 from hashlib import sha1
+
 import torch
 from torch_geometric.utils import degree
 

@@ -1,9 +1,10 @@
 #! /usr/bin/env python3
 
+from pathlib import Path
+
 import hydra
 from hydra.utils import instantiate as hydra_inst
 from omegaconf import DictConfig
-from pathlib import Path
 from pytorch_lightning import LightningModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from ranking_utils.model.data.h5 import H5DataModule
@@ -17,11 +18,7 @@ def main(config: DictConfig):
     seed_everything(config.seed)
     common.set_cuda_devices_env(config.used_gpus)
 
-    checkpointcb = ModelCheckpoint(
-        dirpath=config.checkpoint_path,
-        save_top_k=-1,
-        filename="{epoch:02d}"
-    )
+    checkpointcb = ModelCheckpoint(dirpath=config.checkpoint_path, save_top_k=-1, filename="{epoch:02d}")
     trainer = hydra_inst(config.trainer, callbacks=[checkpointcb])
 
     assert isinstance(trainer, Trainer)
@@ -39,5 +36,5 @@ def main(config: DictConfig):
     trainer.fit(model=model, datamodule=datamodule, ckpt_path=checkpoint)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -1,6 +1,6 @@
 # https://github.com/sebastian-hofstaetter/neural-ranking-kd/blob/main/minimal_colbert_usage_example.ipynb
-from transformers import AutoModel, PreTrainedModel, PretrainedConfig
 import torch
+from transformers import AutoModel, PretrainedConfig, PreTrainedModel
 
 
 class ColBERTConfig(PretrainedConfig):
@@ -17,6 +17,7 @@ class ColBERT(PreTrainedModel):
     ColBERT model from: https://arxiv.org/pdf/2004.12832.pdf
     We use a dot-product instead of cosine per term (slightly better)
     """
+
     config_class = ColBERTConfig
     base_model_prefix = "bert_model"
 

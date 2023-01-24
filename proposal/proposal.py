@@ -1,24 +1,28 @@
 from hashlib import sha1
 from itertools import product
-
 from pathlib import Path
-
-from ranking_utils.model import Ranker
-from ranking_utils.model.data import DataProcessor
+from typing import Any, Iterable, NamedTuple, Union
 
 import torch
-from torch.nn import BCEWithLogitsLoss, MSELoss
 import torch.nn.functional as F
+from ranking_utils.model import Ranker
+from ranking_utils.model.data import DataProcessor
 from torch.linalg import vector_norm
-from torch_geometric.data import Batch as tgBatch, Data
+from torch.nn import BCEWithLogitsLoss, MSELoss
+from torch_geometric.data import Batch as tgBatch
+from torch_geometric.data import Data
+
 # from torch_geometric.utils.convert import to_scipy_sparse_matrix
-from transformers import DistilBertModel, DistilBertTokenizer, get_constant_schedule_with_warmup
-from typing import Any, Iterable, NamedTuple, Union
+from transformers import (
+    DistilBertModel,
+    DistilBertTokenizer,
+    get_constant_schedule_with_warmup,
+)
 
 from common.utils import tensor_hash, unbatch_edge_attr
 
-from ._doc_encoder import DocEncoder
 from ._colbert import ColBERT
+from ._doc_encoder import DocEncoder
 
 
 class Input(NamedTuple):
@@ -33,7 +37,6 @@ class Batch(NamedTuple):
 
 
 class ProposedDataProcessor(DataProcessor):
-
     def __init__(self, query_limit: int, cache_dir: str = "./cache/graphs/") -> None:
         super().__init__()
         self.query_limit = query_limit
@@ -77,7 +80,7 @@ class ProposedDataProcessor(DataProcessor):
     def get_model_input(self, query: str, doc: str) -> Input:
         query = query.strip() or "(empty)"
         doc = doc.strip() or "(empty)"
-        return Input(doc=doc, query=query[:self.query_limit])
+        return Input(doc=doc, query=query[: self.query_limit])
 
     def get_model_batch(self, inputs: Iterable[Input]) -> Batch:
         docs, queries = zip(*inputs)
@@ -86,12 +89,11 @@ class ProposedDataProcessor(DataProcessor):
         return Batch(
             docs={"input_ids": doc_in["input_ids"], "attention_mask": doc_in["attention_mask"]},
             queries={"input_ids": query_in["input_ids"], "attention_mask": query_in["attention_mask"]},
-            doc_graphs=self._construct_doc_batch([input.doc for input in inputs])
+            doc_graphs=self._construct_doc_batch([input.doc for input in inputs]),
         )
 
 
 class ProposedRanker(Ranker):
-
     def __init__(self, lr: float, warmup_steps: int, cache_dir: str = "./cache/colbert/") -> None:
         super().__init__()
         self.lr = lr
@@ -102,7 +104,7 @@ class ProposedRanker(Ranker):
             "sebastian-hofstaetter/colbert-distilbert-margin_mse-T2-msmarco"
         )
         self.mseloss = MSELoss()
-        self.bce = BCEWithLogitsLoss(reduction='none')
+        self.bce = BCEWithLogitsLoss(reduction="none")
 
         # Freeze colbers parameters since we only want to train the doc_encoder for now
         for p in self.colbert.parameters():
@@ -122,7 +124,7 @@ class ProposedRanker(Ranker):
         # In another batch, however, the same input as for id2 would have input_ids: [ 101, 3231,  102, 0, 0] with the
         # last two entries masked out and a simple hash of the input_ids would not recognize it to be effectively the
         # same input.
-        input_length = torch.nonzero(attention_mask)[-1]+1
+        input_length = torch.nonzero(attention_mask)[-1] + 1
         unmasked = input_ids[:input_length]
         key = tensor_hash(unmasked)
         cache_file = self.cache_dir / f"{key}"
@@ -133,13 +135,13 @@ class ProposedRanker(Ranker):
             input = {"input_ids": unmasked.unsqueeze(0), "attention_mask": attention_mask[:input_length].unsqueeze(0)}
             data = self.colbert.forward_representation(input).squeeze()
             torch.save(data, cache_file)
-        data = F.pad(input=data, pad=(0, 0, 0, attention_mask.size(0)-input_length), mode='constant', value=0)
+        data = F.pad(input=data, pad=(0, 0, 0, attention_mask.size(0) - input_length), mode="constant", value=0)
         assert data.size(0) == input_ids.size(0)
         return data
 
     @torch.no_grad()
     def _forward_colbert_representation_or_load_from_cache(self, input: dict[str, torch.LongTensor]) -> torch.Tensor:
-        out = torch.stack([self._fw_colbert_single(*pair) for pair in zip(input['input_ids'], input['attention_mask'])])
+        out = torch.stack([self._fw_colbert_single(*pair) for pair in zip(input["input_ids"], input["attention_mask"])])
         return out
 
     def _sparsity(self, doc_graphs: Data) -> torch.Tensor:
@@ -148,10 +150,9 @@ class ProposedRanker(Ranker):
         norms = [vector_norm(v, ord=2) for v in edge_attrs]
         return torch.tensor(norms, device=self.device)
 
-    def forward(self,
-                batch: Batch,
-                return_all: bool = False
-                ) -> Union[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor, Data]]:
+    def forward(
+        self, batch: Batch, return_all: bool = False
+    ) -> Union[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor, Data]]:
         docs_graphs, docs, queries = batch.doc_graphs, batch.docs, batch.queries
         query_vecs = self._forward_colbert_representation_or_load_from_cache(queries)
         doc_vecs, doc_graphs = self.doc_encoder(**docs_graphs.to_dict())
@@ -177,12 +178,14 @@ class ProposedRanker(Ranker):
         # Ablation: different combinations of these lossfunctions and their effect on training
         loss = torch.mean(distillation_loss + sparsity + classification_loss)
         # loss = torch.mean(distillation_loss + classification_loss)
-        self.log_dict({
-            "loss/total": loss,
-            "loss/distillation": torch.mean(distillation_loss),
-            "loss/sparsity": torch.mean(sparsity),
-            "loss/classification": torch.mean(classification_loss)
-        })
+        self.log_dict(
+            {
+                "loss/total": loss,
+                "loss/distillation": torch.mean(distillation_loss),
+                "loss/sparsity": torch.mean(sparsity),
+                "loss/classification": torch.mean(classification_loss),
+            }
+        )
         return loss
 
     def configure_optimizers(self) -> tuple[list[Any], list[Any]]:
