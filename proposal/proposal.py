@@ -23,6 +23,7 @@ from common.utils import tensor_hash, unbatch_edge_attr
 
 from ._colbert import ColBERT
 from ._doc_encoder import DocEncoder
+from ._cache import Cache
 
 
 class Input(NamedTuple):
@@ -37,20 +38,28 @@ class Batch(NamedTuple):
 
 
 class ProposedDataProcessor(DataProcessor):
-    def __init__(self, query_limit: int, cache_dir: str = "./cache/graphs/") -> None:
+    def __init__(self, query_limit: int, cache: Cache) -> None: #cache_dir: str = "./cache/graphs/") -> None:
         super().__init__()
         self.query_limit = query_limit
-        self.cache_dir = Path(cache_dir)
+        #self.cache_dir = Path(cache_dir)
+        self.cache = cache
         self.tokenizer: DistilBertTokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
         self.bert: DistilBertModel = DistilBertModel.from_pretrained("distilbert-base-uncased")
 
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        #self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    @torch.no_grad()
+    def _get_embedding(self, doc: str) -> torch.Tensor:
+        # Calculate the embedding layer of the bert model for the node features
+        input_ids = self.tokenizer(doc, padding=True, truncation=True, return_tensors="pt")["input_ids"]
+        return self.bert.embeddings(input_ids).squeeze()  # (seq_length, dim)
 
     @torch.no_grad()
     def _construct_graph_or_load_from_cache(self, doc: str) -> Data:
         # We can't use python's hash here since it is not consistent across runs
         # key = hash(doc).to_bytes(8, "big", signed=True).hex()
         key = sha1(doc.encode(), usedforsecurity=False).hexdigest()
+        """
         cache_file = self.cache_dir / f"{key}"
         if cache_file.exists():
             data = torch.load(cache_file)
@@ -71,6 +80,17 @@ class ProposedDataProcessor(DataProcessor):
             torch.save(data, cache_file)
 
         return data
+        """
+        x = self.cache.get_or_add(key, self._get_embedding, doc)  # (seq_length, dim)
+        num_tokens = x.size(0)
+
+        # Create the edge_index for the fully connected graph with num_tokens nodes
+        edge_index = torch.LongTensor(list(product(range(num_tokens), range(num_tokens)))).T
+
+        assert x.size() == (num_tokens, 768)
+        assert edge_index.size() == (2, num_tokens**2)
+
+        return Data(x=x, edge_index=edge_index)
 
     def _construct_doc_batch(self, docs: list[str]) -> Data:
         batch = tgBatch.from_data_list([self._construct_graph_or_load_from_cache(doc) for doc in docs])
@@ -94,11 +114,13 @@ class ProposedDataProcessor(DataProcessor):
 
 
 class ProposedRanker(Ranker):
-    def __init__(self, lr: float, warmup_steps: int, cache_dir: str = "./cache/colbert/") -> None:
+    def __init__(self, lr: float, warmup_steps: int, cache: Cache) -> None: #cache_dir: str = "./cache/colbert.h5") -> None:
         super().__init__()
+        #self.save_hyperparameters()
         self.lr = lr
         self.warmup_steps = warmup_steps
-        self.cache_dir = Path(cache_dir)
+        self.cache = cache
+        #self.cache_dir = Path(cache_dir)
         self.doc_encoder = DocEncoder(feature_size=768, hidden_size=768)
         self.colbert: ColBERT = ColBERT.from_pretrained(
             "sebastian-hofstaetter/colbert-distilbert-margin_mse-T2-msmarco"
@@ -110,7 +132,12 @@ class ProposedRanker(Ranker):
         for p in self.colbert.parameters():
             p.requires_grad = False
 
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    @torch.no_grad()
+    def _get_representation(self, unmasked: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        input = {"input_ids": unmasked.unsqueeze(0), "attention_mask": attention_mask.unsqueeze(0)}
+        return self.colbert.forward_representation(input).squeeze()
 
     @torch.no_grad()
     def _fw_colbert_single(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -127,14 +154,16 @@ class ProposedRanker(Ranker):
         input_length = torch.nonzero(attention_mask)[-1] + 1
         unmasked = input_ids[:input_length]
         key = tensor_hash(unmasked)
-        cache_file = self.cache_dir / f"{key}"
-        if cache_file.exists():
-            data = torch.load(cache_file, map_location=self.device)
-            assert isinstance(data, torch.Tensor)
-        else:
-            input = {"input_ids": unmasked.unsqueeze(0), "attention_mask": attention_mask[:input_length].unsqueeze(0)}
-            data = self.colbert.forward_representation(input).squeeze()
-            torch.save(data, cache_file)
+        data = self.cache.get_or_add(key, self._get_representation, unmasked, attention_mask[:input_length]).to(self.device)
+        #cache_file = self.cache_dir / f"{key}"
+        #if cache_file.exists():
+        #    data = torch.load(cache_file, map_location=self.device)
+        #    assert isinstance(data, torch.Tensor)
+        #else:
+        #    input = {"input_ids": unmasked.unsqueeze(0), "attention_mask": attention_mask[:input_length].unsqueeze(0)}
+        #    data = self.colbert.forward_representation(input).squeeze()
+        #    torch.save(data, cache_file)
+
         data = F.pad(input=data, pad=(0, 0, 0, attention_mask.size(0) - input_length), mode="constant", value=0)
         assert data.size(0) == input_ids.size(0)
         return data
@@ -184,6 +213,7 @@ class ProposedRanker(Ranker):
                 "loss/distillation": torch.mean(distillation_loss),
                 "loss/sparsity": torch.mean(sparsity),
                 "loss/classification": torch.mean(classification_loss),
+                "cache/miss_era": self.cache.stats.miss_era,
             }
         )
         return loss
