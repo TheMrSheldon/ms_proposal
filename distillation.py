@@ -5,9 +5,13 @@ from pathlib import Path
 import hydra
 from hydra.utils import instantiate as hydra_inst
 from omegaconf import DictConfig
-from pytorch_lightning import LightningModule, Trainer, seed_everything
+from pytorch_lightning import (
+    LightningDataModule,
+    LightningModule,
+    Trainer,
+    seed_everything,
+)
 from pytorch_lightning.callbacks import ModelCheckpoint
-from ranking_utils.model.data.h5 import H5DataModule
 
 import common
 from proposal import ProposedDataProcessor, ProposedRanker
@@ -27,7 +31,7 @@ def main(config: DictConfig):
     data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=f"./cache/graphs_{trainer.precision}/")
     datamodule = hydra_inst(config.datamodule, data_processor=data_processor)
     assert isinstance(model, LightningModule)
-    assert isinstance(datamodule, H5DataModule)
+    assert isinstance(datamodule, LightningDataModule)
 
     checkpoint = None
     if config.checkpoint is not None:
