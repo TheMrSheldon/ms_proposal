@@ -1,3 +1,4 @@
 git+https://github.com/mrjleo/ranking-utils.git
+git+https://github.com/marceljahnke/negative-cache.git
 pytorch-lightning==1.8.6
 transformers==4.25.1

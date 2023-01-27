@@ -27,7 +27,14 @@ def main(config: DictConfig):
 
     assert isinstance(trainer, Trainer)
 
-    model = ProposedRanker(lr=0.00003, warmup_steps=1000, cache_dir=f"./cache/colbert_{trainer.precision}/")
+    hparams = {
+        "projection_size": 512,
+        "cache_size": 512000,
+        "input_feature_size": 512,
+        "top_k": 64,
+        "distributed_cache_loss": True,
+    }
+    model = ProposedRanker(lr=0.00003, warmup_steps=1000, hparams=hparams, cache_dir=f"./cache/colbert_{trainer.precision}/")
     data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=f"./cache/graphs_{trainer.precision}/")
     datamodule = hydra_inst(config.datamodule, data_processor=data_processor)
     assert isinstance(model, LightningModule)
