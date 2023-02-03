@@ -26,7 +26,7 @@ class Representation(NamedTuple):
     graph: Optional[Data] = None
 
 
-class NegSampling():
+class NegSampling:
     def __init__(self, bank_size: int, sample_size: int, warmup: int = 40000) -> None:
         assert bank_size >= sample_size
         self.bank_size = bank_size
@@ -40,20 +40,28 @@ class NegSampling():
         masks = batch.attention_mask.cpu()
         for vector, mask in zip(vectors, masks):
             input_length = torch.nonzero(mask)[-1] + 1
-            self.queue.append((vector[:input_length].clone(), mask[:input_length].clone()))
+            self.queue.append((vector[:input_length].clone(), mask[:input_length].clone(), vector.grad))
 
     def sample(self, batch: Representation, device) -> Representation:
         entries = [self.queue.popleft() for _ in range(min(self.sample_size, len(self.queue)))]
         if not entries:
             return None
+        vector = self.collate_fn([v for v, _, _ in entries]).to(device)
+        grad = self.collate_fn([g for _, _, g in entries]).to(device)
+        vector = torch.dot(vector.flatten(), grad.flatten())
         return Representation(
-            vector=self.collate_fn([v for v, _ in entries]).to(device),
-            attention_mask=self.collate_fn([m for _, m in entries]).to(device),
+            vector=vector,
+            attention_mask=self.collate_fn([m for _, m, _ in entries]).to(device),
         )
 
     def collate_fn(self, data_list: list[torch.Tensor]) -> torch.Tensor:
         max_length = max(x.size(0) for x in data_list)
-        padded = [F.pad(input=x, pad=[0,0]*(data_list[0].dim()-1) + [0, max_length - x.size(0)], mode="constant", value=0) for x in data_list]
+        padded = [
+            F.pad(
+                input=x, pad=[0, 0] * (data_list[0].dim() - 1) + [0, max_length - x.size(0)], mode="constant", value=0
+            )
+            for x in data_list
+        ]
         return torch.stack(padded)
 
 
@@ -113,7 +121,7 @@ class ProposedRanker(Ranker):
         # Calculate the l2-norm for each graph's edge_weights
         edge_attrs = unbatch_edge_attr(doc_graphs.edge_weight, doc_graphs.edge_index, doc_graphs.batch)
         norms = [vector_norm(v, ord=2) for v in edge_attrs]
-        return torch.tensor(norms, device=self.device)
+        return torch.stack(norms)
 
     def _enc_doc(self, input: tuple[Data, torch.Tensor]) -> Representation:
         doc_graphs, docs = input
@@ -145,43 +153,66 @@ class ProposedRanker(Ranker):
         assert isinstance(doc_rep, Representation)
 
         # Compute classification of the sampled negatives for contrastive loss
-        neg_emb_batch = self.neg_sampling.sample(batch, device=self.device)  # (samplesize, ...)
-        self.neg_sampling.register(doc_rep)
-        if neg_emb_batch is not None:
-            with torch.no_grad():
-                num_samples = neg_emb_batch.vector.size(0)
-                num_queries = query_rep.vector.size(0)
-                exp_queries = query_rep.vector.unsqueeze(1).expand(-1, num_samples, -1, -1)  # (batch, samplesize, ...)
-                exp_neg_emb = neg_emb_batch.vector.unsqueeze(0).repeat_interleave(num_queries, dim=0)  # (batch, samplesize, ...)
+        # Due to issues with gradient calculation we will only perform in-batch negatives instead of cross-batch
+        # negatives
+        batchsize = query_rep.vector.size(0)
+        num_queries = query_rep.vector.size(0)
+        # [d1, d2, d3] --> [d1, d1, d2, d2, d3, d3]
+        neg_batch = Representation(
+            vector=(
+                doc_rep.vector.unsqueeze(1)  # (batch, 1, maxtokens_d, 768)
+                .expand(-1, num_queries - 1, -1, -1)  # (batch, numqueries-1, maxtokens_d, 768)
+                .reshape((-1, *doc_rep.vector.shape[-2:]))  # (batch * (numqueries-1), maxtokens_d, 768)
+            ),
+            attention_mask=(
+                doc_rep.attention_mask.unsqueeze(1)  # (batch, 1, maxtokens_d)
+                .expand(-1, num_queries - 1, -1)  # (batch, numqueries-1, maxtokens_d)
+                .reshape((-1, doc_rep.attention_mask.shape[-1]))  # (batch * (numqueries-1), maxtokens_d)
+            ),
+        )
+        # [q1, q2, q3] --> [q1, q2, q3, q1, q2, q3, q1, q2, q3]
+        kept_indices = [i for i in range(num_queries*batchsize) if i % (num_queries+1) != 0]
+        neg_queries = Representation(
+            vector=(
+                query_rep.vector  # (batch, maxtokens_q, 768)
+                .expand(num_queries, -1, -1, -1)  # (numqueries, batch, maxtokens_q, 768)
+                .reshape((-1, *query_rep.vector.shape[-2:]))  # (batch*numqueries, maxtokens_q, 768)
+                [kept_indices]  # (batch*(numqueries-1), maxtokens_q, 768)
+            ),
+            attention_mask=(
+                query_rep.attention_mask  # (batch, maxtokens_q)
+                .expand(num_queries, -1, -1)  # (numqueries, batch, maxtokens_q)
+                .reshape((-1, query_rep.attention_mask.shape[-1]))  # (batch*numqueries, maxtokens_q)
+                [kept_indices]  # (batch*(numqueries-1), maxtokens_q)
+            ),
+        )
+        assert neg_batch.vector.size(0) == batchsize*(num_queries-1)
+        assert neg_batch.attention_mask.size(0) == batchsize*(num_queries-1)
+        assert neg_queries.vector.size(0) == batchsize*(num_queries-1)
+        assert neg_queries.attention_mask.size(0) == batchsize*(num_queries-1)
 
-                exp_q_mask = query_rep.attention_mask.unsqueeze(1).expand(-1, num_samples, -1)  # (batch, samplesize, ...)
-                exp_neg_mask = neg_emb_batch.attention_mask.unsqueeze(0).repeat_interleave(num_queries, dim=0)  # (batch, samplesize, ...)
+        neg_outputs = torch.exp(self._late_interaction(neg_queries, neg_batch))  # (batch*(numqueries-1))
+        neg_sum = neg_outputs.reshape((num_queries, num_queries-1)).sum(1)  # (batch)
+        pos_outputs = torch.exp(pred)
+        classification_loss = torch.mean(-torch.log(pos_outputs / (pos_outputs+neg_sum)).flatten())
 
-                pos_outputs = torch.exp(pred)  # (batch)
-                new_shape = (-1, *exp_queries.shape[2:]) #(exp_queries.shape[0]*exp_queries.shape[1], *exp_queries.shape[2:])
-                new_attn_shape = (-1, *exp_q_mask.shape[2:])
-                # q_rep = Representation(exp_queries.reshape(new_shape), exp_q_mask.reshape(new_shape))
-                q_rep = Representation(exp_queries.reshape(new_shape), exp_q_mask.reshape(new_attn_shape))
-                new_shape = (-1, *exp_neg_emb.shape[2:])
-                new_attn_shape = (-1, *exp_neg_mask.shape[2:])
-                n_rep = Representation(exp_neg_emb.reshape(new_shape), exp_neg_mask.reshape(new_attn_shape))
-            neg_outputs = torch.exp(self._late_interaction(q_rep, n_rep))  # (batch*samplesize, 1) # (batch, samplesize)
-            # print(neg_outputs.size())
-            neg_sum = neg_outputs.reshape((num_queries, num_samples)).sum(1)  # (batch)
-            # print(neg_sum.size())
-            classification_loss = torch.mean(-torch.log(pos_outputs / (pos_outputs+neg_sum)).flatten())
-            # print(classification_loss)
-            # print(classification_loss.size())
-        else:
-            pos_outputs = torch.exp(pred)  # (batch)
-            classification_loss = torch.mean(-torch.log(pos_outputs / pos_outputs).flatten())
+        # x = torch.arange(12).reshape((3,4))
+        # n = x.unsqueeze(1).expand(-1,2,-1).reshape((-1, *x.shape[-1:]))
+        # q = x.expand(2, -1, -1).reshape((-1, *x.shape[-1:]))
 
         # Compute teacher embedding for the distillation loss
         teacher_doc_vecs = self._forward_colbert_representation_or_load_from_cache(pos_batch.docs)
         distillation_loss = torch.mean(self.mseloss(doc_rep.vector, teacher_doc_vecs))
 
         # Compute sparsity of the document representation
-        sparsity = torch.mean(self._sparsity(doc_rep.graph))
+        # sparsity = torch.mean(self._sparsity(doc_rep.graph))
+        # Additionally push sparsity towards a reasonable value (we arbitrarily chose 3) instead of 0
+        sparsity = 0.1 * torch.square(torch.mean(self._sparsity(doc_rep.graph)))
+
+        # alpha*(cls) + (1-alpha)*(distill)  -- try around
+        # or normalize the loss
+        # tiny bert loss modified to be applied here
+        # kl divergence loss
 
         # Ablation: different combinations of these lossfunctions and their effect on training
         loss = distillation_loss + sparsity + classification_loss
