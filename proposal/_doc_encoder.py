@@ -1,5 +1,5 @@
 import torch
-from torch.nn import Module
+from pytorch_lightning import LightningModule
 from torch.nn.utils.rnn import pad_sequence
 from torch_geometric.data import Data
 from torch_geometric.nn import GATConv, GCNConv
@@ -7,7 +7,7 @@ from torch_geometric.utils import unbatch
 from transformers import DistilBertTokenizer
 
 
-class DocEncoder(Module):
+class DocEncoder(LightningModule):
     def __init__(self, feature_size: int, hidden_size: int, steps: int = 1) -> None:
         super().__init__()
         self.feature_size = feature_size
@@ -22,7 +22,7 @@ class DocEncoder(Module):
         x = self.gcn2(x, edge_index, edge_mask).relu()
         return x
 
-    def _update_graph_structure(self, x, edge_index) -> tuple[torch.Tensor, torch.Tensor]:
+    def _update_graph_structure(self, x, edge_index) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         edge_mask = torch.ones((edge_index.shape[1], 1))
         for _ in range(self.steps):
             # For now, we use GAT alpha. In future, we will use some distribution.
@@ -38,5 +38,7 @@ class DocEncoder(Module):
 
     def forward(self, x, edge_index, batch, **_) -> tuple[torch.FloatTensor, Data]:
         x, _, edge_mask = self._update_graph_structure(x, edge_index)
+        if not self.training:  # on inference we want to hard mask the document
+            edge_mask = edge_mask.ge(0.5).float()
         emb = self._compute_graph_embedding(x, batch)
         return emb, Data(x=x, edge_index=edge_index, edge_weight=edge_mask, batch=batch)

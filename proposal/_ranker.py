@@ -1,5 +1,3 @@
-from collections import deque
-
 from pathlib import Path
 from typing import Any, NamedTuple, Optional, Union
 
@@ -26,45 +24,6 @@ class Representation(NamedTuple):
     graph: Optional[Data] = None
 
 
-class NegSampling:
-    def __init__(self, bank_size: int, sample_size: int, warmup: int = 40000) -> None:
-        assert bank_size >= sample_size
-        self.bank_size = bank_size
-        self.sample_size = sample_size
-        self.warmup = warmup
-
-        self.queue = deque(maxlen=self.bank_size)
-
-    def register(self, batch: Representation):
-        vectors = batch.vector.cpu()
-        masks = batch.attention_mask.cpu()
-        for vector, mask in zip(vectors, masks):
-            input_length = torch.nonzero(mask)[-1] + 1
-            self.queue.append((vector[:input_length].clone(), mask[:input_length].clone(), vector.grad))
-
-    def sample(self, batch: Representation, device) -> Representation:
-        entries = [self.queue.popleft() for _ in range(min(self.sample_size, len(self.queue)))]
-        if not entries:
-            return None
-        vector = self.collate_fn([v for v, _, _ in entries]).to(device)
-        grad = self.collate_fn([g for _, _, g in entries]).to(device)
-        vector = torch.dot(vector.flatten(), grad.flatten())
-        return Representation(
-            vector=vector,
-            attention_mask=self.collate_fn([m for _, m, _ in entries]).to(device),
-        )
-
-    def collate_fn(self, data_list: list[torch.Tensor]) -> torch.Tensor:
-        max_length = max(x.size(0) for x in data_list)
-        padded = [
-            F.pad(
-                input=x, pad=[0, 0] * (data_list[0].dim() - 1) + [0, max_length - x.size(0)], mode="constant", value=0
-            )
-            for x in data_list
-        ]
-        return torch.stack(padded)
-
-
 class ProposedRanker(Ranker):
     def __init__(self, lr: float, warmup_steps: int, cache_dir: str = "./cache/colbert/") -> None:
         super().__init__(training_mode=TrainingMode.CONTRASTIVE)
@@ -77,7 +36,6 @@ class ProposedRanker(Ranker):
         )
         self.mseloss = MSELoss()
         self.bce = BCEWithLogitsLoss(reduction="none")
-        self.neg_sampling = NegSampling(20, 10)
 
         # Freeze colbers parameters since we only want to train the doc_encoder for now
         for p in self.colbert.parameters():
@@ -146,6 +104,8 @@ class ProposedRanker(Ranker):
         return classlbl
 
     def training_step(self, batch) -> torch.Tensor:
+        assert self.training
+
         pos_batch, _, _ = batch  # We expect to only get positives here
         assert isinstance(pos_batch, Batch)
         pred, (query_rep, doc_rep) = self(pos_batch, return_all=True)
@@ -196,10 +156,6 @@ class ProposedRanker(Ranker):
         pos_outputs = torch.exp(pred)
         classification_loss = torch.mean(-torch.log(pos_outputs / (pos_outputs+neg_sum)).flatten())
 
-        # x = torch.arange(12).reshape((3,4))
-        # n = x.unsqueeze(1).expand(-1,2,-1).reshape((-1, *x.shape[-1:]))
-        # q = x.expand(2, -1, -1).reshape((-1, *x.shape[-1:]))
-
         # Compute teacher embedding for the distillation loss
         teacher_doc_vecs = self._forward_colbert_representation_or_load_from_cache(pos_batch.docs)
         distillation_loss = torch.mean(self.mseloss(doc_rep.vector, teacher_doc_vecs))
@@ -209,6 +165,7 @@ class ProposedRanker(Ranker):
         # Additionally push sparsity towards a reasonable value (we arbitrarily chose 3) instead of 0
         sparsity = 0.1 * torch.square(torch.mean(self._sparsity(doc_rep.graph)))
 
+        # Other options for losses:
         # alpha*(cls) + (1-alpha)*(distill)  -- try around
         # or normalize the loss
         # tiny bert loss modified to be applied here
@@ -216,7 +173,6 @@ class ProposedRanker(Ranker):
 
         # Ablation: different combinations of these lossfunctions and their effect on training
         loss = distillation_loss + sparsity + classification_loss
-        # loss = distillation_loss + classification_loss
         self.log_dict(
             {
                 "loss/total": loss,

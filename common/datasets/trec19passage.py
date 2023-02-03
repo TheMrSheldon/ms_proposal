@@ -14,12 +14,12 @@ from ranking_utils.model.data.h5 import (
     DataProcessor,
     PairwiseTrainingInstance,
     PointwiseTrainingInstance,
+    PredictionDataset,
+    PredictionInstance,
     TrainingDataset,
     TrainingMode,
     ValTestDataset,
     ValTestInstance,
-    PredictionDataset,
-    PredictionInstance,
 )
 from torch.utils.data import DataLoader
 
@@ -107,7 +107,7 @@ class TREC2019PassageTest(ValTestDataset):
         query = self.queries.loc[row["q_id"]]
         doc = self.docs.loc[row["doc_id"]]
         # Return relevance-1 since 0, 1 are considered irrelevant whereas 2, 3 are considered relevant
-        return str(query["content"]), str(doc["content"]), (int(row["rel"])-1)
+        return str(query["content"]), str(doc["content"]), (int(row["rel"]) - 1)
 
 
 class TREC2019PassagePredict(PredictionDataset):

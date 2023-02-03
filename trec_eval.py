@@ -1,18 +1,23 @@
 #! /usr/bin/env python3
 
+from collections import defaultdict
+from pathlib import Path
+
 import hydra
 from hydra.utils import instantiate as hydra_inst
 from omegaconf import DictConfig
-from pytorch_lightning import seed_everything, LightningModule, LightningDataModule, Trainer
+from pytorch_lightning import (
+    LightningDataModule,
+    LightningModule,
+    Trainer,
+    seed_everything,
+)
 from ranking_utils import write_trec_eval_file
-
-from collections import defaultdict
-from pathlib import Path
 from tqdm import tqdm
 
 import common
-from common.trec_eval import trec_evaluation, load_qrels_from_file, load_run_from_file
 from common.datasets.trec19passage import TREC2019Passage
+from common.trec_eval import load_run_from_file, trec_evaluation
 from proposal import ProposedDataProcessor, ProposedRanker
 
 
@@ -27,7 +32,7 @@ def main(config: DictConfig):
     trainer = hydra_inst(config.trainer)
     assert isinstance(trainer, Trainer)
     assert trainer.num_devices == 1
-    
+
     model = ProposedRanker(lr=0.00003, warmup_steps=1000, cache_dir=f"./cache/colbert_{trainer.precision}/")
     data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=f"./cache/graphs_{trainer.precision}/")
     datamodule = hydra_inst(config.datamodule, data_processor=data_processor)
@@ -37,7 +42,9 @@ def main(config: DictConfig):
 
     if not result_path.exists():
         print("Evaluating model")
-        predictions = trainer.predict(model=model, dataloaders=datamodule, return_predictions=True, ckpt_path=checkpoint_path / config.checkpoint)
+        predictions = trainer.predict(
+            model=model, dataloaders=datamodule, return_predictions=True, ckpt_path=checkpoint_path / config.checkpoint
+        )
         ids = [(qid, did) for _, qid, did in datamodule.predict_dataset.ids()]
         result = defaultdict(dict[str, float])
         for entry in tqdm(predictions):
