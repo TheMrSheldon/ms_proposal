@@ -2,7 +2,7 @@ import io
 import shutil
 import tarfile
 from pathlib import Path
-from typing import Optional, Union
+from typing import Iterator, Optional, Union
 from urllib.parse import urlparse
 
 import pandas
@@ -16,8 +16,14 @@ from ranking_utils.model.data.h5 import (
     PointwiseTrainingInstance,
     TrainingDataset,
     TrainingMode,
+    ValTestDataset,
+    ValTestInstance,
+    PredictionDataset,
+    PredictionInstance,
 )
 from torch.utils.data import DataLoader
+
+from ..trec_eval import load_qrels_from_file
 
 
 class TREC2019PassageTrain(TrainingDataset):
@@ -66,6 +72,86 @@ class TREC2019PassageTrain(TrainingDataset):
         raise io.UnsupportedOperation
 
 
+class TREC2019PassageTest(ValTestDataset):
+    def __init__(self, data_processor: DataProcessor, root_dir: Path) -> None:
+        super().__init__(data_processor)
+        self.root_dir = root_dir
+        self.qrels: pandas.DataFrame = pandas.read_csv(
+            root_dir / "2019qrels-pass.txt", sep=" ", names=["q_id", "unused", "doc_id", "rel"], header=None
+        )
+        self.docs: pandas.DataFrame = pandas.read_csv(
+            root_dir / "collection.tsv", sep="\t", names=["doc_id", "content"], header=None, index_col="doc_id"
+        )
+        self.queries: pandas.DataFrame = pandas.read_csv(
+            root_dir / "queries.eval.tsv", sep="\t", names=["q_id", "content"], header=None, index_col="q_id"
+        )
+
+    def _num_instances(self) -> int:
+        """Return the number of instances.
+
+        Returns:
+            int: The number of instances.
+        """
+        return len(self.qrels)
+
+    def _get_instance(self, index: int) -> ValTestInstance:
+        """Return the instance corresponding to an index.
+
+        Args:
+            index (int): The index.
+
+        Returns:
+            ValTestInstance: The corresponding instance.
+        """
+        row = self.qrels.iloc[index]
+        query = self.queries.loc[row["q_id"]]
+        doc = self.docs.loc[row["doc_id"]]
+        # Return relevance-1 since 0, 1 are considered irrelevant whereas 2, 3 are considered relevant
+        return str(query["content"]), str(doc["content"]), (int(row["rel"])-1)
+
+
+class TREC2019PassagePredict(PredictionDataset):
+    def __init__(self, data_processor: DataProcessor, root_dir: Path) -> None:
+        super().__init__(data_processor)
+        self.root_dir = root_dir
+        self.qrels: pandas.DataFrame = pandas.read_csv(
+            root_dir / "2019qrels-pass.txt", sep=" ", names=["q_id", "unused", "doc_id", "rel"], header=None
+        )
+        self.docs: pandas.DataFrame = pandas.read_csv(
+            root_dir / "collection.tsv", sep="\t", names=["doc_id", "content"], header=None, index_col="doc_id"
+        )
+        self.queries: pandas.DataFrame = pandas.read_csv(
+            root_dir / "queries.eval.tsv", sep="\t", names=["q_id", "content"], header=None, index_col="q_id"
+        )
+
+    def _num_instances(self) -> int:
+        """Return the number of instances.
+
+        Returns:
+            int: The number of instances.
+        """
+        return len(self.qrels)
+
+    def _get_instance(self, index: int) -> PredictionInstance:
+        """Return the instance corresponding to an index.
+
+        Args:
+            index (int): The index.
+
+        Returns:
+            ValTestInstance: The corresponding instance.
+        """
+        row = self.qrels.iloc[index]
+        query = self.queries.loc[row["q_id"]]
+        doc = self.docs.loc[row["doc_id"]]
+        return index, str(query["content"]), str(doc["content"])
+
+    def ids(self) -> Iterator[tuple[int, str, str]]:
+        for i in range(self._num_instances()):
+            row = self.qrels.iloc[i]
+            yield i, str(row["q_id"]), str(row["doc_id"])
+
+
 class TREC2019Passage(LightningDataModule):
     def __init__(
         self,
@@ -74,6 +160,7 @@ class TREC2019Passage(LightningDataModule):
         batch_size: int,
         num_workers: int = 16,
         limit_train_set: Union[int, float, None] = None,
+        limit_test_set: Union[int, float, None] = None,
     ):
         super().__init__()
         self.root_dir = Path(data_dir)
@@ -82,6 +169,7 @@ class TREC2019Passage(LightningDataModule):
         self.data_processor = data_processor
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self.limit_train_set = limit_train_set
+        self.limit_test_set = limit_test_set
 
     def _download(self, url: str, filename: Optional[str] = None, ignore_existing: bool = False) -> bool:
         if filename is None:
@@ -147,12 +235,15 @@ class TREC2019Passage(LightningDataModule):
         # make assignments here (val/train/test split)
         # called on every process in DDP
         self.train_dataset = TREC2019PassageTrain(self.data_processor, self.root_dir)
+        self.test_dataset = TREC2019PassageTest(self.data_processor, self.root_dir)
+        self.predict_dataset = TREC2019PassagePredict(self.data_processor, self.root_dir)
 
     def train_dataloader(self):
         return DataLoader(
             dataset=subset_dataset(self.train_dataset, self.limit_train_set),
             batch_size=self.batch_size,
             shuffle=True,
+            num_workers=self.num_workers,
             collate_fn=self.train_dataset.collate_fn,
         )
 
@@ -160,7 +251,32 @@ class TREC2019Passage(LightningDataModule):
         raise NotImplementedError
 
     def test_dataloader(self):
-        raise NotImplementedError
+        return DataLoader(
+            dataset=subset_dataset(self.test_dataset, self.limit_test_set),
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            collate_fn=self.test_dataset.collate_fn,
+        )
+
+    def predict_dataloader(self):
+        return DataLoader(
+            dataset=self.predict_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            collate_fn=self.predict_dataset.collate_fn,
+        )
+
+    def qrels(self) -> dict[str, dict[str, int]]:
+        return load_qrels_from_file(self.root_dir / "2019qrels-pass.txt")
+
+    def relevance_level(self) -> int:
+        """
+        Returns the smallest relevance grade that can be considered relevant.
+        For trec '19 passage this is 2 (https://trec.nist.gov/data/deep2019.html).
+        """
+        return 2
 
     def teardown(self, stage):
         pass

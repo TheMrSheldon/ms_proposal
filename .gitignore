@@ -5,6 +5,7 @@ outputs
 .hydra
 .vscode
 .vector_cache
+results
 cache
 
 # Created by https://www.toptal.com/developers/gitignore/api/python,visualstudiocode,linux,macos,windows
