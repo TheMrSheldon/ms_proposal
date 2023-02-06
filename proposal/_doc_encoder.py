@@ -13,8 +13,9 @@ class DocEncoder(LightningModule):
         self.feature_size = feature_size
         self.steps = steps
         self.gcn1 = GCNConv(in_channels=feature_size, out_channels=hidden_size)
-        self.gcn2 = GCNConv(in_channels=hidden_size, out_channels=feature_size)
+        self.gcn2 = GCNConv(in_channels=hidden_size, out_channels=hidden_size)
         self.gat_alpha = GATConv(in_channels=feature_size, out_channels=feature_size)
+        self.gcn3 = GCNConv(in_channels=hidden_size, out_channels=feature_size)
         self.tokenizer: DistilBertTokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
 
     def _message_passing(self, x, edge_index, edge_mask) -> torch.Tensor:
@@ -30,15 +31,16 @@ class DocEncoder(LightningModule):
             x = self._message_passing(x, edge_index, edge_mask)
         return x, edge_index, edge_mask
 
-    def _compute_graph_embedding(self, x, batch) -> torch.Tensor:
+    def _compute_graph_embedding(self, x, edge_index, edge_mask, batch) -> torch.Tensor:
         # We can't do pooling here since ColBERT's late interaction will require (batch, words, feature_size) tensors
         # but pooling would result in a (batch, feature_size) tensor
         # return global_mean_pool(x, batch)  # (batch, feature_size)
+        x = self.gcn3(x, edge_index, edge_weight=edge_mask)
         return pad_sequence(unbatch(x, batch), batch_first=True)  # (batch, words, feature_size)
 
     def forward(self, x, edge_index, batch, **_) -> tuple[torch.FloatTensor, Data]:
         x, _, edge_mask = self._update_graph_structure(x, edge_index)
         if not self.training:  # on inference we want to hard mask the document
             edge_mask = edge_mask.ge(0.5).float()
-        emb = self._compute_graph_embedding(x, batch)
+        emb = self._compute_graph_embedding(x, edge_index, edge_mask, batch)
         return emb, Data(x=x, edge_index=edge_index, edge_weight=edge_mask, batch=batch)
