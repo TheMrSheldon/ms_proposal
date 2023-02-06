@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from ranking_utils.model import Ranker, TrainingMode
 from torch.linalg import vector_norm
-from torch.nn import BCEWithLogitsLoss, MSELoss
+from torch.nn import Module, BCEWithLogitsLoss, MSELoss
 from torch_geometric.data import Data
 
 # from torch_geometric.utils.convert import to_scipy_sparse_matrix
@@ -24,16 +24,19 @@ class Representation(NamedTuple):
     graph: Optional[Data] = None
 
 
-class LinearMSELoss(torch.Module):
+class LinearMSELoss(Module):
     def __init__(self) -> None:
         super().__init__()
         self.mse = MSELoss()
-        self.linear: Optional[torch.nn.Linear] = None
+        #self.linear: Optional[torch.nn.Linear] = None
+        self.linear = torch.nn.Linear(768, 768, bias=False)
 
     def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        if self.linear is None:
-            self.linear = torch.nn.Linear(input.size(-1), target.size(-2))
-        return self.mse(self.linear(input), target)
+        inp = input.view((-1, input.size(-1)))
+        tgt = target.view((-1, target.size(-1)))
+        #if self.linear is None:
+        #    self.linear = torch.nn.Linear(inp.size(-1), tgt.size(-1), bias=False)
+        return self.mse(self.linear(inp), tgt)
 
 
 class ProposedRanker(Ranker):
@@ -170,22 +173,22 @@ class ProposedRanker(Ranker):
 
         # We try different options for the classification loss
         # 1) Contrastive Loss
-        neg_exp = torch.exp(neg_outputs)  # (batch*(numqueries-1))
-        neg_sum = neg_exp.reshape((num_queries, num_queries-1)).sum(1)  # (batch)
-        pos_exp = torch.exp(pos_outputs)
-        classification_loss = torch.mean(-torch.log(pos_exp / (pos_exp+neg_sum)).flatten())
+        # neg_exp = torch.exp(neg_outputs)  # (batch*(numqueries-1))
+        # neg_sum = neg_exp.reshape((num_queries, num_queries-1)).sum(1)  # (batch)
+        # pos_exp = torch.exp(pos_outputs)
+        # classification_loss = torch.mean(-torch.log(pos_exp / (pos_exp+neg_sum)).flatten())
         # 2) TinyBERT's L_pred (Cross Entropy Loss in Eq. 10)
-        # out = torch.cat((pos_outputs, neg_outputs))
-        # labels = torch.cat((torch.ones_like(pos_outputs), torch.zeros_like(neg_outputs)))
-        # classification_loss = self.bce(out, labels)
+        out = torch.cat((pos_outputs, neg_outputs))
+        labels = torch.cat((torch.ones_like(pos_outputs), torch.zeros_like(neg_outputs)))
+        classification_loss = torch.mean(self.bce(out, labels))
 
         # Compute teacher embedding for the distillation loss
         teacher_doc_vecs = self._forward_colbert_representation_or_load_from_cache(pos_batch.docs)
         # We try different options for the distillation loss
         # 1) simple MSE loss
-        distillation_loss = torch.mean(self.mseloss(doc_rep.vector, teacher_doc_vecs))
+        # distillation_loss = torch.mean(self.mseloss(doc_rep.vector, teacher_doc_vecs))
         # 2) TinyBERT's L_hidn (MSE with additional linear transformation)
-        # distillation_loss = torch.mean(self.hidden_loss(doc_rep.vector, teacher_doc_vecs))
+        distillation_loss = self.hidden_loss(doc_rep.vector, teacher_doc_vecs)
 
         # Compute sparsity of the document representation
         # sparsity = torch.mean(self._sparsity(doc_rep.graph))
