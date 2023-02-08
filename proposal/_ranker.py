@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from ranking_utils.model import Ranker, TrainingMode
 from torch.linalg import vector_norm
-from torch.nn import Module, BCEWithLogitsLoss, MSELoss
+from torch.nn import BCEWithLogitsLoss, Module, MSELoss
 from torch_geometric.data import Data
 
 # from torch_geometric.utils.convert import to_scipy_sparse_matrix
@@ -40,12 +40,12 @@ class LinearMSELoss(Module):
 
 
 class ProposedRanker(Ranker):
-    def __init__(self, lr: float, warmup_steps: int, cache_dir: str = "./cache/colbert/") -> None:
+    def __init__(self, lr: float, warmup_steps: int, topk=1.0, cache_dir: str = "./cache/colbert/") -> None:
         super().__init__(training_mode=TrainingMode.CONTRASTIVE)
         self.lr = lr
         self.warmup_steps = warmup_steps
         self.cache_dir = Path(cache_dir)
-        self.doc_encoder = DocEncoder(feature_size=768, hidden_size=2*768)
+        self.doc_encoder = DocEncoder(feature_size=768, hidden_size=2*768, topk=topk)
         self.colbert: ColBERT = ColBERT.from_pretrained(
             "sebastian-hofstaetter/colbert-distilbert-margin_mse-T2-msmarco"
         )

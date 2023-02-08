@@ -10,7 +10,8 @@ used_gpus: null
 checkpoint: ???
 run_name: ???
 checkpoint_path: "checkpoints/${run_name}"
-result_path: "results/${run_name}/${checkpoint}.tsv"
+result_path: "results/${run_name}/k=${topk};${checkpoint}.tsv"
+topk: ???
 
 trainer:
   _target_: pytorch_lightning.Trainer
