@@ -93,10 +93,12 @@ class ProposedRanker(Ranker):
         return out
 
     def _sparsity(self, doc_graphs: Data) -> torch.Tensor:
-        # Calculate the l2-norm for each graph's edge_weights
+        # 1) Calculate the l2-norm for each graph's edge_weights
         edge_attrs = unbatch_edge_attr(doc_graphs.edge_weight, doc_graphs.edge_index, doc_graphs.batch)
         norms = [vector_norm(v, ord=2) for v in edge_attrs]
         return torch.stack(norms)
+        # 2) Frobenius Norm of adjacency matrix
+        # TODO
 
     def _enc_doc(self, input: tuple[Data, torch.Tensor]) -> Representation:
         doc_graphs, docs = input
@@ -192,17 +194,21 @@ class ProposedRanker(Ranker):
 
         # Compute sparsity of the document representation
         # sparsity = torch.mean(self._sparsity(doc_rep.graph))
-        # Additionally push sparsity towards a reasonable value (we arbitrarily chose 3) instead of 0
-        sparsity = 0.1 * torch.square(torch.mean(self._sparsity(doc_rep.graph)))
+        # Additionally push sparsity towards a reasonable value (we arbitrarily chose 0)
+        sparsity = 0.1 * torch.square(torch.mean(self._sparsity(doc_rep.graph)-0))
 
         # Other options for losses:
-        # alpha*(cls) + (1-alpha)*(distill)  -- try around
         # or normalize the loss
-        # tiny bert loss modified to be applied here
         # kl divergence loss
 
         # Ablation: different combinations of these lossfunctions and their effect on training
-        loss = distillation_loss + sparsity + classification_loss
+        # 1) Simple sum:
+        # loss = distillation_loss + sparsity + classification_loss
+        # 2) Weighted:
+        alpha = .25  # Hyperparameter: importance of distillation
+        # alpha in v3: (version_0, version_1: .75; version_2: .25)
+        loss = alpha*distillation_loss + (1-alpha)*(.5*classification_loss + .5*sparsity)
+
         self.log_dict(
             {
                 "loss/total": loss,
