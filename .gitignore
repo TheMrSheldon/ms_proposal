@@ -7,6 +7,7 @@ outputs
 .vector_cache
 results
 cache
+optuna
 
 # Created by https://www.toptal.com/developers/gitignore/api/python,visualstudiocode,linux,macos,windows
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,visualstudiocode,linux,macos,windows

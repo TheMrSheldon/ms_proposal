@@ -73,17 +73,17 @@ class TREC2019PassageTrain(TrainingDataset):
 
 
 class TREC2019PassageTest(ValTestDataset):
-    def __init__(self, data_processor: DataProcessor, root_dir: Path) -> None:
+    def __init__(self, data_processor: DataProcessor, root_dir: Path, qrels_file: str = "2019qrels-pass.txt", sep=" ") -> None:
         super().__init__(data_processor)
         self.root_dir = root_dir
         self.qrels: pandas.DataFrame = pandas.read_csv(
-            root_dir / "2019qrels-pass.txt", sep=" ", names=["q_id", "unused", "doc_id", "rel"], header=None
+            root_dir / qrels_file, sep=sep, names=["q_id", "unused", "doc_id", "rel"], header=None
         )
         self.docs: pandas.DataFrame = pandas.read_csv(
             root_dir / "collection.tsv", sep="\t", names=["doc_id", "content"], header=None, index_col="doc_id"
         )
         self.queries: pandas.DataFrame = pandas.read_csv(
-            root_dir / "queries.eval.tsv", sep="\t", names=["q_id", "content"], header=None, index_col="q_id"
+            root_dir / "queries.dev.tsv", sep="\t", names=["q_id", "content"], header=None, index_col="q_id"
         )
 
     def _num_instances(self) -> int:
@@ -107,7 +107,7 @@ class TREC2019PassageTest(ValTestDataset):
         query = self.queries.loc[row["q_id"]]
         doc = self.docs.loc[row["doc_id"]]
         # Return relevance-1 since 0, 1 are considered irrelevant whereas 2, 3 are considered relevant
-        return str(query["content"]), str(doc["content"]), (int(row["rel"]) - 1)
+        return str(query["content"]), str(doc["content"]), (int(row["q_id"])), (int(row["rel"]) - 1)
 
 
 class TREC2019PassagePredict(PredictionDataset):
@@ -235,7 +235,8 @@ class TREC2019Passage(LightningDataModule):
         # make assignments here (val/train/test split)
         # called on every process in DDP
         self.train_dataset = TREC2019PassageTrain(self.data_processor, self.root_dir)
-        self.test_dataset = TREC2019PassageTest(self.data_processor, self.root_dir)
+        self.test_dataset = TREC2019PassageTest(self.data_processor, self.root_dir, "2019qrels-pass.txt", sep=" ")
+        self.val_dataset = TREC2019PassageTest(self.data_processor, self.root_dir, "qrels.dev.tsv", sep="\t")
         self.predict_dataset = TREC2019PassagePredict(self.data_processor, self.root_dir)
 
     def train_dataloader(self):
@@ -245,10 +246,18 @@ class TREC2019Passage(LightningDataModule):
             shuffle=True,
             num_workers=self.num_workers,
             collate_fn=self.train_dataset.collate_fn,
+            pin_memory=True,
         )
 
     def val_dataloader(self):
-        raise NotImplementedError
+        return DataLoader(
+            dataset=self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            collate_fn=self.test_dataset.collate_fn,
+            pin_memory=True,
+        )
 
     def test_dataloader(self):
         return DataLoader(
@@ -257,6 +266,7 @@ class TREC2019Passage(LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             collate_fn=self.test_dataset.collate_fn,
+            pin_memory=True,
         )
 
     def predict_dataloader(self):
@@ -266,6 +276,7 @@ class TREC2019Passage(LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             collate_fn=self.predict_dataset.collate_fn,
+            pin_memory=True,
         )
 
     def qrels(self) -> dict[str, dict[str, int]]:

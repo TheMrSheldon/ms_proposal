@@ -34,7 +34,7 @@ class DocEncoder(LightningModule):
         return x
 
     def _update_graph_structure(self, x, edge_index) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        edge_mask = torch.ones((edge_index.shape[1], 1))
+        edge_mask = torch.ones((edge_index.shape[1], 1), device=self.device)
         for _ in range(self.steps):
             # For now, we use GAT alpha. In future, we will use some distribution.
             _, (_, edge_mask) = self.gat_alpha(x, edge_index, return_attention_weights=True)

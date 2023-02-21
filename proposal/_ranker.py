@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, NamedTuple, Optional, Union
+from typing import Any, Iterable, NamedTuple, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -40,10 +40,12 @@ class LinearMSELoss(Module):
 
 
 class ProposedRanker(Ranker):
-    def __init__(self, lr: float, warmup_steps: int, topk=1.0, cache_dir: str = "./cache/colbert/") -> None:
+    def __init__(self, lr: float, warmup_steps: int, alpha: float=0.5, sparsity_tgt: float=3, topk=1.0, cache_dir: str = "./cache/colbert/") -> None:
         super().__init__(training_mode=TrainingMode.CONTRASTIVE)
         self.lr = lr
         self.warmup_steps = warmup_steps
+        self.alpha = alpha
+        self.sparsity_tgt = sparsity_tgt
         self.cache_dir = Path(cache_dir)
         self.doc_encoder = DocEncoder(feature_size=768, hidden_size=2*768, topk=topk)
         self.colbert: ColBERT = ColBERT.from_pretrained(
@@ -181,7 +183,7 @@ class ProposedRanker(Ranker):
         # classification_loss = torch.mean(-torch.log(pos_exp / (pos_exp+neg_sum)).flatten())
         # 2) TinyBERT's L_pred (Cross Entropy Loss in Eq. 10)
         out = torch.cat((pos_outputs, neg_outputs))
-        labels = torch.cat((torch.ones_like(pos_outputs), torch.zeros_like(neg_outputs)))
+        labels = torch.cat((torch.ones_like(pos_outputs, device=self.device), torch.zeros_like(neg_outputs, device=self.device)))
         classification_loss = torch.mean(self.bce(out, labels))
 
         # Compute teacher embedding for the distillation loss
@@ -194,20 +196,18 @@ class ProposedRanker(Ranker):
 
         # Compute sparsity of the document representation
         # sparsity = torch.mean(self._sparsity(doc_rep.graph))
-        # Additionally push sparsity towards a reasonable value (we arbitrarily chose 0)
-        sparsity = 0.1 * torch.square(torch.mean(self._sparsity(doc_rep.graph)-0))
+        # Additionally push sparsity towards a reasonable value (we arbitrarily chose 3)
+        sparsity = 0.1 * torch.square(torch.mean(self._sparsity(doc_rep.graph)-self.sparsity_tgt))
 
         # Other options for losses:
-        # or normalize the loss
+        # normalize the loss
         # kl divergence loss
 
         # Ablation: different combinations of these lossfunctions and their effect on training
         # 1) Simple sum:
         # loss = distillation_loss + sparsity + classification_loss
         # 2) Weighted:
-        alpha = .25  # Hyperparameter: importance of distillation
-        # alpha in v3: (version_0, version_1: .75; version_2: .25)
-        loss = alpha*distillation_loss + (1-alpha)*(.5*classification_loss + .5*sparsity)
+        loss = self.alpha*distillation_loss + (1-self.alpha)*(.5*classification_loss + .5*sparsity)
 
         self.log_dict(
             {
@@ -218,6 +218,87 @@ class ProposedRanker(Ranker):
             }
         )
         return loss
+
+    def validation_step(self, batch, batch_idx: int) -> torch.Tensor:
+        """Process a validation batch. The returned query IDs are internal IDs.
+
+        Args:
+            batch (ValTestBatch): A validation batch.
+            batch_idx (int): Batch index.
+
+        Returns:
+            Dict[str, torch.Tensor]: Query IDs, scores and labels.
+        """
+        # model_batch, q_ids, labels = batch
+        # pred = self(model_batch).flatten()
+        # return self.bce(pred, labels.float().flatten())
+        pos_batch, _, _ = batch  # We expect to only get positives here
+        assert isinstance(pos_batch, Batch)
+        pred, (query_rep, doc_rep) = self(pos_batch, return_all=True)
+        assert isinstance(query_rep, Representation)
+        assert isinstance(doc_rep, Representation)
+
+        # Compute classification of the sampled negatives for contrastive loss
+        # Due to issues with gradient calculation we will only perform in-batch negatives instead of cross-batch
+        # negatives
+        batchsize = query_rep.vector.size(0)
+        num_queries = query_rep.vector.size(0)
+        # [d1, d2, d3] --> [d1, d1, d2, d2, d3, d3]
+        neg_batch = Representation(
+            vector=(
+                doc_rep.vector.unsqueeze(1)  # (batch, 1, maxtokens_d, 768)
+                .expand(-1, num_queries - 1, -1, -1)  # (batch, numqueries-1, maxtokens_d, 768)
+                .reshape((-1, *doc_rep.vector.shape[-2:]))  # (batch * (numqueries-1), maxtokens_d, 768)
+            ),
+            attention_mask=(
+                doc_rep.attention_mask.unsqueeze(1)  # (batch, 1, maxtokens_d)
+                .expand(-1, num_queries - 1, -1)  # (batch, numqueries-1, maxtokens_d)
+                .reshape((-1, doc_rep.attention_mask.shape[-1]))  # (batch * (numqueries-1), maxtokens_d)
+            ),
+        )
+        # [q1, q2, q3] --> [q1, q2, q3, q1, q2, q3, q1, q2, q3]
+        kept_indices = [i for i in range(num_queries*batchsize) if i % (num_queries+1) != 0]
+        neg_queries = Representation(
+            vector=(
+                query_rep.vector  # (batch, maxtokens_q, 768)
+                .expand(num_queries, -1, -1, -1)  # (numqueries, batch, maxtokens_q, 768)
+                .reshape((-1, *query_rep.vector.shape[-2:]))  # (batch*numqueries, maxtokens_q, 768)
+                [kept_indices]  # (batch*(numqueries-1), maxtokens_q, 768)
+            ),
+            attention_mask=(
+                query_rep.attention_mask  # (batch, maxtokens_q)
+                .expand(num_queries, -1, -1)  # (numqueries, batch, maxtokens_q)
+                .reshape((-1, query_rep.attention_mask.shape[-1]))  # (batch*numqueries, maxtokens_q)
+                [kept_indices]  # (batch*(numqueries-1), maxtokens_q)
+            ),
+        )
+        assert neg_batch.vector.size(0) == batchsize*(num_queries-1)
+        assert neg_batch.attention_mask.size(0) == batchsize*(num_queries-1)
+        assert neg_queries.vector.size(0) == batchsize*(num_queries-1)
+        assert neg_queries.attention_mask.size(0) == batchsize*(num_queries-1)
+
+        neg_outputs = self._late_interaction(neg_queries, neg_batch)
+        pos_outputs = pred
+
+        out = torch.cat((pos_outputs, neg_outputs))
+        labels = torch.cat((torch.ones_like(pos_outputs, device=self.device), torch.zeros_like(neg_outputs, device=self.device)))
+        return torch.mean(self.bce(out, labels))
+
+    def validation_step_end(self, step_results: dict[str, torch.Tensor]) -> None:
+        """Update the validation metrics.
+
+        Args:
+            step_results (Dict[str, torch.Tensor]): Results from a validation step.
+        """
+        pass
+
+    def validation_epoch_end(self, val_results: Iterable[torch.Tensor]) -> None:
+        """Compute validation metrics.
+
+        Args:
+            val_results (Iterable[Dict[str, torch.Tensor]]): Results of the validation steps.
+        """
+        self.log("val_loss", torch.mean(torch.stack(list(val_results))), sync_dist=True)
 
     def configure_optimizers(self) -> tuple[list[Any], list[Any]]:
         opt = torch.optim.AdamW(filter(lambda p: p.requires_grad, self.parameters()), lr=self.lr)

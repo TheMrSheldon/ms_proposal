@@ -29,7 +29,8 @@ def main(config: DictConfig):
     assert isinstance(trainer, Trainer)
 
     print("Instantiating model", flush=True)
-    model = ProposedRanker(lr=0.00003, warmup_steps=1000, cache_dir=f"./cache/colbert_{trainer.precision}/")
+    # model = ProposedRanker(lr=0.00003, warmup_steps=1000, cache_dir=f"./cache/colbert_{trainer.precision}/")
+    model = ProposedRanker(lr=1e-5, warmup_steps=1000, cache_dir=f"./cache/colbert_{trainer.precision}/")
     data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=f"./cache/graphs_{trainer.precision}/")
 
     print("Instantiating datamodule", flush=True)
