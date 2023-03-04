@@ -33,8 +33,16 @@ def main(config: DictConfig):
     assert isinstance(trainer, Trainer)
     assert trainer.num_devices == 1
 
-    model = ProposedRanker(lr=0.00003, warmup_steps=1000, cache_dir=f"./cache/colbert_{trainer.precision}/", topk=config.topk)
-    data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=f"./cache/graphs_{trainer.precision}/")
+    print("Fetching cache paths", flush=True)
+    keys = {"precision": trainer.precision}
+    cache_root = Path(config.cache_root)
+    model_cache = cache_root/config.model_cache.format(**keys) if config.model_cache else None
+    processor_cache = cache_root/config.processor_cache.format(**keys) if config.processor_cache else None
+    print(f"Model cache: {model_cache}")
+    print(f"Processor cache: {processor_cache}")
+
+    model = ProposedRanker(lr=0.00003, warmup_steps=1000, cache_dir=model_cache, topk=config.topk)
+    data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=processor_cache)
     datamodule = hydra_inst(config.datamodule, data_processor=data_processor)
     assert isinstance(model, LightningModule)
     assert isinstance(datamodule, LightningDataModule)

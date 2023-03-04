@@ -1,7 +1,7 @@
 from hashlib import sha1
 from itertools import product
 from pathlib import Path
-from typing import Iterable, NamedTuple
+from typing import Iterable, NamedTuple, Union
 
 import torch
 from ranking_utils.model.data import DataProcessor
@@ -24,17 +24,35 @@ class Batch(NamedTuple):
 
 
 class ProposedDataProcessor(DataProcessor):
-    def __init__(self, query_limit: int, cache_dir: str = "./cache/graphs/") -> None:
+    def __init__(self, query_limit: int, cache_dir: Union[str, Path, None] = "./cache/graphs/") -> None:
         super().__init__()
         self.query_limit = query_limit
-        self.cache_dir = Path(cache_dir)
+        self.cache_dir = Path(cache_dir) if cache_dir else None
         self.tokenizer: DistilBertTokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
         self.bert: DistilBertModel = DistilBertModel.from_pretrained("distilbert-base-uncased")
 
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        if self.cache_dir:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    @torch.no_grad()
+    def _construct_graph(self, doc: str) -> Data:
+        # Calculate the embedding layer of the bert model for the node features
+        input_ids = self.tokenizer(doc, padding=True, truncation=True, return_tensors="pt")["input_ids"]
+        x = self.bert.embeddings(input_ids).squeeze()  # (seq_length, dim)
+        num_tokens = x.size(0)
+
+        # Create the edge_index for the fully connected graph with num_tokens nodes
+        edge_index = torch.LongTensor(list(product(range(num_tokens), range(num_tokens)))).T
+
+        assert x.size() == (num_tokens, 768)
+        assert edge_index.size() == (2, num_tokens**2)
+
+        return Data(x=x, edge_index=edge_index)
 
     @torch.no_grad()
     def _construct_graph_or_load_from_cache(self, doc: str) -> Data:
+        if self.cache_dir is None:
+            return self._construct_graph(doc)
         # We can't use python's hash here since it is not consistent across runs
         # key = hash(doc).to_bytes(8, "big", signed=True).hex()
         key = sha1(doc.encode(), usedforsecurity=False).hexdigest()
@@ -43,18 +61,7 @@ class ProposedDataProcessor(DataProcessor):
             data = torch.load(cache_file)
             assert isinstance(data, Data)
         else:
-            # Calculate the embedding layer of the bert model for the node features
-            input_ids = self.tokenizer(doc, padding=True, truncation=True, return_tensors="pt")["input_ids"]
-            x = self.bert.embeddings(input_ids).squeeze()  # (seq_length, dim)
-            num_tokens = x.size(0)
-
-            # Create the edge_index for the fully connected graph with num_tokens nodes
-            edge_index = torch.LongTensor(list(product(range(num_tokens), range(num_tokens)))).T
-
-            assert x.size() == (num_tokens, 768)
-            assert edge_index.size() == (2, num_tokens**2)
-
-            data = Data(x=x, edge_index=edge_index)
+            data = self._construct_graph(doc)
             torch.save(data, cache_file)
 
         return data

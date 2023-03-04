@@ -1,5 +1,7 @@
 #! /usr/bin/env python3
 
+print("loading...", flush=True)
+
 from pathlib import Path
 import hydra
 from hydra.utils import instantiate as hydra_inst
@@ -15,6 +17,7 @@ from proposal import ProposedDataProcessor, ProposedRanker
 from pytorch_lightning import LightningModule
 from pytorch_lightning.callbacks import Callback, ModelCheckpoint
 import warnings
+print("done", flush=True)
 
 
 # https://github.com/optuna/optuna-examples/issues/166#issuecomment-1403112861
@@ -87,15 +90,22 @@ def _objective(trial: Trial, config: DictConfig) -> float:
     trainer = hydra_inst(config.trainer, callbacks=callbacks, enable_progress_bar=False)
     assert isinstance(trainer, Trainer)
 
+    keys = {"precision": trainer.precision}
+    cache_root = Path(config.cache_root)
+    model_cache = cache_root/config.model_cache.format(**keys) if config.model_cache else None
+    processor_cache = cache_root/config.processor_cache.format(**keys) if config.processor_cache else None
+    print(f"Model cache: {model_cache}")
+    print(f"Processor cache: {processor_cache}")
+
     model = ProposedRanker(
         lr=lr,
         warmup_steps=warmup_steps,
         sparsity_tgt=sparsity_tgt,
         alpha=alpha,
         topk=topk,
-        cache_dir=f"./cache/colbert_{trainer.precision}/",
+        cache_dir=model_cache,
     )
-    data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=f"./cache/graphs_{trainer.precision}/")
+    data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=processor_cache)
 
     datamodule = hydra_inst(config.datamodule, data_processor=data_processor)
     assert isinstance(model, LightningModule)
@@ -108,6 +118,7 @@ def _objective(trial: Trial, config: DictConfig) -> float:
 
 @hydra.main(config_path="hydra_conf", config_name="optuna", version_base=None)
 def main(config: DictConfig):
+    print("Setting hyper parameter optimization up", flush=True)
     seed_everything(config.seed)
     common.set_cuda_devices_env(config.used_gpus)
 
@@ -127,6 +138,7 @@ def main(config: DictConfig):
     def objective(trial: Trial) -> float:
         return _objective(trial, config)
 
+    print("Starting optimization", flush=True)
     study.optimize(objective, n_trials=100, timeout=None)
 
     print(f"Number of finished trials: {len(study.trials)}")
@@ -140,4 +152,5 @@ def main(config: DictConfig):
 
 
 if __name__ == "__main__":
+    print("entering main", flush=True)
     main()

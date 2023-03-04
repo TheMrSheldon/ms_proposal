@@ -12,6 +12,10 @@ checkpoint: null
 run_name: ???
 checkpoint_path: "checkpoints/${run_name}"
 
+cache_root: "cache"
+model_cache: "colbert_{precision}"
+processor_cache: "graphs_{precision}"
+
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: gpu

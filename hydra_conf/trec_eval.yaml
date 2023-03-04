@@ -13,6 +13,10 @@ checkpoint_path: "checkpoints/${run_name}"
 result_path: "results/${run_name}/k=${topk};${checkpoint}.tsv"
 topk: ???
 
+cache_root: "cache"
+model_cache: "colbert_{precision}"
+processor_cache: "graphs_{precision}"
+
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: gpu

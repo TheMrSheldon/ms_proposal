@@ -28,10 +28,18 @@ def main(config: DictConfig):
     trainer = hydra_inst(config.trainer, callbacks=[checkpointcb])
     assert isinstance(trainer, Trainer)
 
+    print("Fetching cache paths", flush=True)
+    keys = {"precision": trainer.precision}
+    cache_root = Path(config.cache_root)
+    model_cache = cache_root/config.model_cache.format(**keys) if config.model_cache else None
+    processor_cache = cache_root/config.processor_cache.format(**keys) if config.processor_cache else None
+    print(f"Model cache: {model_cache}")
+    print(f"Processor cache: {processor_cache}")
+
     print("Instantiating model", flush=True)
     # model = ProposedRanker(lr=0.00003, warmup_steps=1000, cache_dir=f"./cache/colbert_{trainer.precision}/")
-    model = ProposedRanker(lr=1e-5, warmup_steps=1000, cache_dir=f"./cache/colbert_{trainer.precision}/")
-    data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=f"./cache/graphs_{trainer.precision}/")
+    model = ProposedRanker(lr=1e-5, warmup_steps=1000, cache_dir=model_cache)
+    data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=processor_cache)
 
     print("Instantiating datamodule", flush=True)
     datamodule = hydra_inst(config.datamodule, data_processor=data_processor)
