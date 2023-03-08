@@ -37,8 +37,19 @@ def main(config: DictConfig):
     print(f"Processor cache: {processor_cache}")
 
     print("Instantiating model", flush=True)
-    # model = ProposedRanker(lr=0.00003, warmup_steps=1000, cache_dir=f"./cache/colbert_{trainer.precision}/")
-    model = ProposedRanker(lr=1e-5, warmup_steps=1000, cache_dir=model_cache)
+    lr = 3e-5
+    warmup_steps = 3000
+    sparsity_tgt = 3
+    alpha = 0.5
+    topk = 0.6
+
+    print("Running new test using:")
+    print(f"\tlr: {lr}")
+    print(f"\twarmup_steps: {warmup_steps}")
+    print(f"\tsparsity_tgt: {sparsity_tgt}")
+    print(f"\talpha: {alpha}")
+    print(f"\ttopk: {topk}")  
+    model = ProposedRanker(lr=lr, warmup_steps=warmup_steps, alpha=alpha, sparsity_tgt=sparsity_tgt, topk=topk, cache_dir=model_cache)
     data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=processor_cache)
 
     print("Instantiating datamodule", flush=True)
