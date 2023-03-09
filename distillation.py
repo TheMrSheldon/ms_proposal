@@ -15,6 +15,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 
 import common
 from proposal import ProposedDataProcessor, ProposedRanker
+from proposal.graph_construction import FullyConnected, GraphOfWord
 
 
 @hydra.main(config_path="hydra_conf", config_name="distillation", version_base=None)
@@ -48,9 +49,11 @@ def main(config: DictConfig):
     print(f"\twarmup_steps: {warmup_steps}")
     print(f"\tsparsity_tgt: {sparsity_tgt}")
     print(f"\talpha: {alpha}")
-    print(f"\ttopk: {topk}")  
+    print(f"\ttopk: {topk}")
+    # graph_construction = FullyConnected()
+    graph_construction = GraphOfWord(window_size=5)
     model = ProposedRanker(lr=lr, warmup_steps=warmup_steps, alpha=alpha, sparsity_tgt=sparsity_tgt, topk=topk, cache_dir=model_cache)
-    data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=processor_cache)
+    data_processor = ProposedDataProcessor(query_limit=10000, graph_construction=graph_construction, cache_dir=processor_cache)
 
     print("Instantiating datamodule", flush=True)
     datamodule = hydra_inst(config.datamodule, data_processor=data_processor)

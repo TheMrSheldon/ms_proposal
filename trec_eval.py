@@ -19,6 +19,7 @@ import common
 from common.datasets.trec19passage import TREC2019Passage
 from common.trec_eval import load_run_from_file, trec_evaluation
 from proposal import ProposedDataProcessor, ProposedRanker
+from proposal.graph_construction import GraphOfWord
 
 
 @hydra.main(config_path="hydra_conf", config_name="trec_eval", version_base=None)
@@ -41,8 +42,23 @@ def main(config: DictConfig):
     print(f"Model cache: {model_cache}")
     print(f"Processor cache: {processor_cache}")
 
-    model = ProposedRanker(lr=0.00003, warmup_steps=1000, cache_dir=model_cache, topk=config.topk)
-    data_processor = ProposedDataProcessor(query_limit=10000, cache_dir=processor_cache)
+    print("Instantiating model", flush=True)
+    lr = 3e-5
+    warmup_steps = 3000
+    sparsity_tgt = 3
+    alpha = 0.5
+
+    print("Running eval using:")
+    print(f"\tlr: {lr}")
+    print(f"\twarmup_steps: {warmup_steps}")
+    print(f"\tsparsity_tgt: {sparsity_tgt}")
+    print(f"\talpha: {alpha}")
+    print(f"\ttopk: {config.topk}")
+    # graph_construction = FullyConnected()
+    graph_construction = GraphOfWord(window_size=5)
+    model = ProposedRanker(lr=lr, warmup_steps=warmup_steps, alpha=alpha, sparsity_tgt=sparsity_tgt, topk=config.topk, cache_dir=model_cache)
+    data_processor = ProposedDataProcessor(query_limit=10000, graph_construction=graph_construction, cache_dir=processor_cache)
+
     datamodule = hydra_inst(config.datamodule, data_processor=data_processor)
     assert isinstance(model, LightningModule)
     assert isinstance(datamodule, LightningDataModule)

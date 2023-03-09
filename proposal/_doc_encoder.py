@@ -34,10 +34,10 @@ class DocEncoder(LightningModule):
         return x
 
     def _update_graph_structure(self, x, edge_index) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        edge_mask = torch.ones((edge_index.shape[1], 1), device=self.device)
+        # edge_mask = torch.ones((edge_index.shape[1], 1), device=self.device)
         for _ in range(self.steps):
             # For now, we use GAT alpha. In future, we will use some distribution.
-            _, (_, edge_mask) = self.gat_alpha(x, edge_index, return_attention_weights=True)
+            _, (edge_index, edge_mask) = self.gat_alpha(x, edge_index, return_attention_weights=True)
             x = self._message_passing(x, edge_index, edge_mask)
         return x, edge_index, edge_mask
 
@@ -49,7 +49,7 @@ class DocEncoder(LightningModule):
         return pad_sequence(unbatch(x, batch), batch_first=True)  # (batch, words, feature_size)
 
     def forward(self, x, edge_index, batch, **_) -> tuple[torch.FloatTensor, Data]:
-        x, _, edge_mask = self._update_graph_structure(x, edge_index)
+        x, edge_index, edge_mask = self._update_graph_structure(x, edge_index)
         if not self.training:  # on inference we want to hard mask the document
             edge_index, edge_mask = self._apply_hardmask(edge_index, edge_mask)
         emb = self._compute_graph_embedding(x, edge_index, edge_mask, batch)
