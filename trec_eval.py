@@ -55,7 +55,7 @@ def main(config: DictConfig):
     print(f"\talpha: {alpha}")
     print(f"\ttopk: {config.topk}")
     # graph_construction = FullyConnected()
-    graph_construction = GraphOfWord(window_size=5)
+    graph_construction = GraphOfWord(window_size=3)
     model = ProposedRanker(lr=lr, warmup_steps=warmup_steps, alpha=alpha, sparsity_tgt=sparsity_tgt, topk=config.topk, cache_dir=model_cache)
     data_processor = ProposedDataProcessor(query_limit=10000, graph_construction=graph_construction, cache_dir=processor_cache)
 
